@@ -54,6 +54,8 @@ static ge::graphStatus SoftmaxCrossEntropyWithLogitsTilingFunc(gert::TilingConte
         batchSize *= featuresShape.GetDim(i);
     }
     int64_t numClasses = featuresShape.GetDim(dimNum - 1);
+    OP_CHECK_IF(batchSize <= 0 || numClasses <= 0,
+                OP_LOGE(context, "batch size and num classes must be positive"), return ge::GRAPH_FAILED);
 
     auto dtype = context->GetInputDesc(0)->GetDataType();
     auto labelsDtype = context->GetInputDesc(1)->GetDataType();
@@ -70,19 +72,15 @@ static ge::graphStatus SoftmaxCrossEntropyWithLogitsTilingFunc(gert::TilingConte
     int64_t usedCoreNum = batchSize < coreNum ? batchSize : coreNum;
     int64_t blockLength = (batchSize + usedCoreNum - 1) / usedCoreNum;
 
-    int64_t tileNum = (blockLength + maxRowsPerTile - 1) / maxRowsPerTile;
-    if (tileNum <= 0) tileNum = 1;
-
-    int64_t tileLength = blockLength / tileNum;
+    int64_t tileLength = blockLength < maxRowsPerTile ? blockLength : maxRowsPerTile;
     if (tileLength <= 0) tileLength = 1;
+    int64_t tileNum = blockLength / tileLength;
 
     tiling->batchSize   = static_cast<uint64_t>(batchSize);
     tiling->numClasses  = static_cast<uint64_t>(numClasses);
     tiling->blockLength = static_cast<uint64_t>(blockLength);
-    // tiling->tileNum     = static_cast<uint64_t>(tileNum);
-    // tiling->tileLength  = static_cast<uint64_t>(tileLength);
-    tiling->tileLength  = 1;
-    tiling->tileNum     = static_cast<uint64_t>(blockLength);
+    tiling->tileNum     = static_cast<uint64_t>(tileNum);
+    tiling->tileLength  = static_cast<uint64_t>(tileLength);
 
     size_t* workspaces = context->GetWorkspaceSizes(1);
     OP_CHECK_NULL_WITH_CONTEXT(context, workspaces);

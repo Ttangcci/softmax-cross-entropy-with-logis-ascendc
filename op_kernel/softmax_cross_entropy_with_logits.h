@@ -51,19 +51,20 @@ template <typename T>
 __aicore__ inline void KernelSoftmaxCrossEntropyWithLogits<T>::Init(
     GM_ADDR features, GM_ADDR labels, GM_ADDR loss, GM_ADDR backprop,
     uint64_t batchSize, uint64_t numClasses,
-    uint64_t blockLength, uint64_t tileNum, uint64_t tileLength)
+    uint64_t blockLength, uint64_t /*tileNum*/, uint64_t tileLength)
 {
     this->batchSize   = batchSize;
     this->numClasses  = numClasses;
-    this->blockLength = blockLength;
-    this->tileNum     = tileNum;
     this->tileLength  = tileLength;
     this->blockOffset = blockLength * GetBlockIdx();
+    uint64_t remainRows = batchSize > blockOffset ? batchSize - blockOffset : 0;
+    this->blockLength = remainRows < blockLength ? remainRows : blockLength;
+    this->tileNum = this->blockLength / tileLength;
 
-    featuresGm.SetGlobalBuffer((__gm__ T*)features + blockOffset * numClasses, blockLength * numClasses);
-    labelsGm.SetGlobalBuffer((__gm__ T*)labels + blockOffset * numClasses, blockLength * numClasses);
-    lossGm.SetGlobalBuffer((__gm__ T*)loss + blockOffset, blockLength);
-    backpropGm.SetGlobalBuffer((__gm__ T*)backprop + blockOffset * numClasses, blockLength * numClasses);
+    featuresGm.SetGlobalBuffer((__gm__ T*)features + blockOffset * numClasses, this->blockLength * numClasses);
+    labelsGm.SetGlobalBuffer((__gm__ T*)labels + blockOffset * numClasses, this->blockLength * numClasses);
+    lossGm.SetGlobalBuffer((__gm__ T*)loss + blockOffset, this->blockLength);
+    backpropGm.SetGlobalBuffer((__gm__ T*)backprop + blockOffset * numClasses, this->blockLength * numClasses);
 
     pipe.InitBuffer(featuresQueue, BUFFER_NUM, tileLength * numClasses * sizeof(T));
     pipe.InitBuffer(labelsQueue,   BUFFER_NUM, tileLength * numClasses * sizeof(T));

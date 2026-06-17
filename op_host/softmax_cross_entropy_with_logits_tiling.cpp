@@ -56,6 +56,11 @@ static ge::graphStatus SoftmaxCrossEntropyWithLogitsTilingFunc(gert::TilingConte
     int64_t numClasses = featuresShape.GetDim(dimNum - 1);
 
     auto dtype = context->GetInputDesc(0)->GetDataType();
+    auto labelsDtype = context->GetInputDesc(1)->GetDataType();
+    OP_CHECK_IF(labelsDtype != dtype,
+                OP_LOGE(context, "features and labels must have the same dtype"), return ge::GRAPH_FAILED);
+    OP_CHECK_IF(dtype != ge::DT_FLOAT && dtype != ge::DT_FLOAT16,
+                OP_LOGE(context, "only float32 and float16 are supported by current kernel"), return ge::GRAPH_FAILED);
     int64_t typeLength = (dtype == ge::DT_FLOAT) ? 4 : 2;
 
     int64_t bytesPerRow = 3 * numClasses * typeLength + typeLength + numClasses * sizeof(float);
@@ -83,13 +88,12 @@ static ge::graphStatus SoftmaxCrossEntropyWithLogitsTilingFunc(gert::TilingConte
     OP_CHECK_NULL_WITH_CONTEXT(context, workspaces);
     workspaces[0] = ascendcPlatform.GetLibApiWorkSpaceSize();
 
-    // uint64_t tilingKey = 0;
-    // if (dtype == ge::DT_FLOAT) {
-    //     tilingKey = GET_TPL_TILING_KEY(0);
-    // } else if (dtype == ge::DT_FLOAT16) {
-    //     tilingKey = GET_TPL_TILING_KEY(1);
-    // }
-    uint64_t tilingKey = GET_TPL_TILING_KEY(0);
+    uint64_t tilingKey = 0;
+    if (dtype == ge::DT_FLOAT) {
+        tilingKey = GET_TPL_TILING_KEY(SCH_MODE_FLOAT);
+    } else {
+        tilingKey = GET_TPL_TILING_KEY(SCH_MODE_FLOAT16);
+    }
     context->SetTilingKey(tilingKey);
     
     context->SetBlockDim(usedCoreNum);

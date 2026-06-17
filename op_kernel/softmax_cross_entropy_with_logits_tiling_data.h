@@ -17,6 +17,7 @@ struct SoftmaxCrossEntropyWithLogitsTilingData {
     uint64_t blockLength;
     uint64_t tileNum;
     uint64_t tileLength;
+    uint64_t classTileLength;
 };
 
 #endif

@@ -31,7 +31,7 @@
 ```cpp
 aclnnStatus aclnnSoftmaxCrossEntropyWithLogitsGetWorkspaceSize(
     const aclTensor* features,
-    const aclTensor* labels,
+    aclTensor* labels,
     aclTensor* loss,
     aclTensor* backprop,
     uint64_t* workspaceSize,

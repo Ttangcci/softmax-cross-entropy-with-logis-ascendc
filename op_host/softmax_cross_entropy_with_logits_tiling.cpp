@@ -73,13 +73,27 @@ static ge::graphStatus SoftmaxCrossEntropyWithLogitsTilingFunc(gert::TilingConte
         calcBytesPerRow += (3 * numClasses + 1) * sizeof(float);
     }
     int64_t bytesPerRow = queueBytesPerRow + calcBytesPerRow + 32;
-    int64_t maxRowsPerTile = static_cast<int64_t>(ubSize) / bytesPerRow;
-    if (maxRowsPerTile <= 0) maxRowsPerTile = 1;
 
     int64_t usedCoreNum = batchSize < coreNum ? batchSize : coreNum;
     int64_t blockLength = (batchSize + usedCoreNum - 1) / usedCoreNum;
 
-    int64_t tileLength = blockLength < maxRowsPerTile ? blockLength : maxRowsPerTile;
+    int64_t classTileLength = numClasses;
+    int64_t tileLength = 1;
+    if (bytesPerRow <= static_cast<int64_t>(ubSize)) {
+        int64_t maxRowsPerTile = static_cast<int64_t>(ubSize) / bytesPerRow;
+        if (maxRowsPerTile <= 0) maxRowsPerTile = 1;
+        tileLength = blockLength < maxRowsPerTile ? blockLength : maxRowsPerTile;
+    } else {
+        int64_t bytesPerClass = bufferNum * 3 * typeLength + sizeof(float);
+        if (dtype == ge::DT_FLOAT16 || dtype == ge::DT_BF16) {
+            bytesPerClass += 3 * sizeof(float);
+        }
+        int64_t availableBytes = static_cast<int64_t>(ubSize) - bufferNum * typeLength - 32;
+        int64_t maxClassesPerTile = availableBytes / bytesPerClass;
+        OP_CHECK_IF(maxClassesPerTile <= 0,
+                    OP_LOGE(context, "UB is too small for split class tiling"), return ge::GRAPH_FAILED);
+        classTileLength = numClasses < maxClassesPerTile ? numClasses : maxClassesPerTile;
+    }
     if (tileLength <= 0) tileLength = 1;
     int64_t tileNum = blockLength / tileLength;
 
@@ -88,6 +102,7 @@ static ge::graphStatus SoftmaxCrossEntropyWithLogitsTilingFunc(gert::TilingConte
     tiling->blockLength = static_cast<uint64_t>(blockLength);
     tiling->tileNum     = static_cast<uint64_t>(tileNum);
     tiling->tileLength  = static_cast<uint64_t>(tileLength);
+    tiling->classTileLength = static_cast<uint64_t>(classTileLength);
 
     size_t* workspaces = context->GetWorkspaceSizes(1);
     OP_CHECK_NULL_WITH_CONTEXT(context, workspaces);

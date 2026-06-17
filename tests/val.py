@@ -57,7 +57,7 @@ def make_cases():
         Case("fixed_one_hot_f32", fixed_features, one_hot(fixed_indices, fixed_features.shape[-1])),
     ]
 
-    for shape in [(1, 3), (7, 5), (2, 3, 4), (2, 2, 3, 5)]:
+    for shape in [(1, 3), (7, 5), (2, 3, 4), (2, 2, 3, 5), (8, 4096), (2, 16384)]:
         features = rng.normal(loc=0.0, scale=2.0, size=shape).astype(np.float32)
         labels = make_probability_labels(rng, shape)
         cases.append(Case(f"prob_f32_shape_{'x'.join(map(str, shape))}", features, labels, "float32"))

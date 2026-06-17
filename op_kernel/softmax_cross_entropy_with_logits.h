@@ -17,13 +17,19 @@ public:
     __aicore__ inline KernelSoftmaxCrossEntropyWithLogits() {};
     __aicore__ inline void Init(GM_ADDR features, GM_ADDR labels, GM_ADDR loss, GM_ADDR backprop,
                                 uint64_t batchSize, uint64_t numClasses,
-                                uint64_t blockLength, uint64_t tileNum, uint64_t tileLength);
+                                uint64_t blockLength, uint64_t tileNum, uint64_t tileLength,
+                                uint64_t classTileLength);
     __aicore__ inline void Process();
 
 private:
     __aicore__ inline void CopyIn(int32_t rowOffset, int32_t rowCount);
     __aicore__ inline void Compute(int32_t rowOffset, int32_t rowCount);
     __aicore__ inline void CopyOut(int32_t rowOffset, int32_t rowCount);
+    __aicore__ inline void ProcessSplitR();
+    __aicore__ inline void CopyInFeaturesClass(int32_t rowOffset, int32_t classOffset, int32_t classCount);
+    __aicore__ inline void CopyInFeatureLabelClass(int32_t rowOffset, int32_t classOffset, int32_t classCount);
+    __aicore__ inline void CopyOutBackpropClass(int32_t rowOffset, int32_t classOffset, int32_t classCount);
+    __aicore__ inline void CopyOutLoss(int32_t rowOffset);
 
 private:
     TPipe pipe;
@@ -45,6 +51,7 @@ private:
     uint64_t blockLength;
     uint64_t tileNum;
     uint64_t tileLength;
+    uint64_t classTileLength;
     uint64_t blockOffset;
 };
 
@@ -52,11 +59,12 @@ template <typename T>
 __aicore__ inline void KernelSoftmaxCrossEntropyWithLogits<T>::Init(
     GM_ADDR features, GM_ADDR labels, GM_ADDR loss, GM_ADDR backprop,
     uint64_t batchSize, uint64_t numClasses,
-    uint64_t blockLength, uint64_t /*tileNum*/, uint64_t tileLength)
+    uint64_t blockLength, uint64_t /*tileNum*/, uint64_t tileLength, uint64_t classTileLength)
 {
     this->batchSize   = batchSize;
     this->numClasses  = numClasses;
     this->tileLength  = tileLength;
+    this->classTileLength = classTileLength;
     this->blockOffset = blockLength * GetBlockIdx();
     uint64_t remainRows = batchSize > blockOffset ? batchSize - blockOffset : 0;
     this->blockLength = remainRows < blockLength ? remainRows : blockLength;
@@ -67,13 +75,15 @@ __aicore__ inline void KernelSoftmaxCrossEntropyWithLogits<T>::Init(
     lossGm.SetGlobalBuffer((__gm__ T*)loss + blockOffset, this->blockLength);
     backpropGm.SetGlobalBuffer((__gm__ T*)backprop + blockOffset * numClasses, this->blockLength * numClasses);
 
-    pipe.InitBuffer(featuresQueue, BUFFER_NUM, tileLength * numClasses * sizeof(T));
-    pipe.InitBuffer(labelsQueue,   BUFFER_NUM, tileLength * numClasses * sizeof(T));
-    pipe.InitBuffer(lossQueue,     BUFFER_NUM, tileLength * sizeof(T));
-    pipe.InitBuffer(backpropQueue, BUFFER_NUM, tileLength * numClasses * sizeof(T));
-    pipe.InitBuffer(tmpBuf,        tileLength * numClasses * sizeof(float));
+    uint64_t processClassLength = classTileLength < numClasses ? classTileLength : numClasses;
+    uint64_t processRowLength = classTileLength < numClasses ? 1 : tileLength;
+    pipe.InitBuffer(featuresQueue, BUFFER_NUM, processRowLength * processClassLength * sizeof(T));
+    pipe.InitBuffer(labelsQueue,   BUFFER_NUM, processRowLength * processClassLength * sizeof(T));
+    pipe.InitBuffer(lossQueue,     BUFFER_NUM, processRowLength * sizeof(T));
+    pipe.InitBuffer(backpropQueue, BUFFER_NUM, processRowLength * processClassLength * sizeof(T));
+    pipe.InitBuffer(tmpBuf,        processRowLength * processClassLength * sizeof(float));
     if constexpr (IsSameType<T, half>::value || IsSameType<T, bfloat16_t>::value) {
-        pipe.InitBuffer(castBuf, (3 * tileLength * numClasses + tileLength) * sizeof(float));
+        pipe.InitBuffer(castBuf, (3 * processRowLength * processClassLength + processRowLength) * sizeof(float));
     }
     pipe.InitBuffer(lnBuf, 32 * sizeof(float));
 }
@@ -250,8 +260,289 @@ __aicore__ inline void KernelSoftmaxCrossEntropyWithLogits<T>::CopyOut(int32_t r
 }
 
 template <typename T>
+__aicore__ inline void KernelSoftmaxCrossEntropyWithLogits<T>::CopyInFeaturesClass(
+    int32_t rowOffset, int32_t classOffset, int32_t classCount)
+{
+    LocalTensor<T> featuresLocal = featuresQueue.AllocTensor<T>();
+
+    DataCopyExtParams copyParams;
+    copyParams.blockCount = 1;
+    copyParams.blockLen = classCount * sizeof(T);
+    copyParams.srcStride = 0;
+    copyParams.dstStride = 0;
+    DataCopyPadExtParams<T> padParams{false, 0, 0, 0};
+
+    DataCopyPad(featuresLocal, featuresGm[rowOffset * numClasses + classOffset], copyParams, padParams);
+    featuresQueue.EnQue(featuresLocal);
+}
+
+template <typename T>
+__aicore__ inline void KernelSoftmaxCrossEntropyWithLogits<T>::CopyInFeatureLabelClass(
+    int32_t rowOffset, int32_t classOffset, int32_t classCount)
+{
+    LocalTensor<T> featuresLocal = featuresQueue.AllocTensor<T>();
+    LocalTensor<T> labelsLocal = labelsQueue.AllocTensor<T>();
+
+    DataCopyExtParams copyParams;
+    copyParams.blockCount = 1;
+    copyParams.blockLen = classCount * sizeof(T);
+    copyParams.srcStride = 0;
+    copyParams.dstStride = 0;
+    DataCopyPadExtParams<T> padParams{false, 0, 0, 0};
+
+    uint64_t gmOffset = rowOffset * numClasses + classOffset;
+    DataCopyPad(featuresLocal, featuresGm[gmOffset], copyParams, padParams);
+    DataCopyPad(labelsLocal, labelsGm[gmOffset], copyParams, padParams);
+
+    featuresQueue.EnQue(featuresLocal);
+    labelsQueue.EnQue(labelsLocal);
+}
+
+template <typename T>
+__aicore__ inline void KernelSoftmaxCrossEntropyWithLogits<T>::CopyOutBackpropClass(
+    int32_t rowOffset, int32_t classOffset, int32_t classCount)
+{
+    LocalTensor<T> backpropLocal = backpropQueue.DeQue<T>();
+
+    DataCopyExtParams copyParams;
+    copyParams.blockCount = 1;
+    copyParams.blockLen = classCount * sizeof(T);
+    copyParams.srcStride = 0;
+    copyParams.dstStride = 0;
+    DataCopyPad(backpropGm[rowOffset * numClasses + classOffset], backpropLocal, copyParams);
+
+    backpropQueue.FreeTensor(backpropLocal);
+}
+
+template <typename T>
+__aicore__ inline void KernelSoftmaxCrossEntropyWithLogits<T>::CopyOutLoss(int32_t rowOffset)
+{
+    LocalTensor<T> lossLocal = lossQueue.DeQue<T>();
+
+    DataCopyExtParams copyParams;
+    copyParams.blockCount = 1;
+    copyParams.blockLen = sizeof(T);
+    copyParams.srcStride = 0;
+    copyParams.dstStride = 0;
+    DataCopyPad(lossGm[rowOffset], lossLocal, copyParams);
+
+    lossQueue.FreeTensor(lossLocal);
+}
+
+template <typename T>
+__aicore__ inline void KernelSoftmaxCrossEntropyWithLogits<T>::ProcessSplitR()
+{
+    int32_t classTileLen = (int32_t)classTileLength;
+    int32_t totalClasses = (int32_t)numClasses;
+    int32_t classTileNum = totalClasses / classTileLen;
+    int32_t classTail = totalClasses - classTileNum * classTileLen;
+
+    for (int32_t row = 0; row < (int32_t)blockLength; row++) {
+        float maxVal = -3.4028234663852886e+38F;
+
+        for (int32_t tile = 0; tile < classTileNum; tile++) {
+            int32_t classOffset = tile * classTileLen;
+            CopyInFeaturesClass(row, classOffset, classTileLen);
+            LocalTensor<T> featuresLocal = featuresQueue.DeQue<T>();
+            if constexpr (IsSameType<T, half>::value || IsSameType<T, bfloat16_t>::value) {
+                LocalTensor<float> featuresFp32 = castBuf.Get<float>();
+                Cast(featuresFp32, featuresLocal, RoundMode::CAST_NONE, classTileLen);
+                for (int32_t i = 0; i < classTileLen; i++) {
+                    float v = featuresFp32.GetValue(i);
+                    if (v > maxVal) {
+                        maxVal = v;
+                    }
+                }
+            } else {
+                for (int32_t i = 0; i < classTileLen; i++) {
+                    float v = (float)featuresLocal.GetValue(i);
+                    if (v > maxVal) {
+                        maxVal = v;
+                    }
+                }
+            }
+            featuresQueue.FreeTensor(featuresLocal);
+        }
+        if (classTail > 0) {
+            int32_t classOffset = classTileNum * classTileLen;
+            CopyInFeaturesClass(row, classOffset, classTail);
+            LocalTensor<T> featuresLocal = featuresQueue.DeQue<T>();
+            if constexpr (IsSameType<T, half>::value || IsSameType<T, bfloat16_t>::value) {
+                LocalTensor<float> featuresFp32 = castBuf.Get<float>();
+                Cast(featuresFp32, featuresLocal, RoundMode::CAST_NONE, classTail);
+                for (int32_t i = 0; i < classTail; i++) {
+                    float v = featuresFp32.GetValue(i);
+                    if (v > maxVal) {
+                        maxVal = v;
+                    }
+                }
+            } else {
+                for (int32_t i = 0; i < classTail; i++) {
+                    float v = (float)featuresLocal.GetValue(i);
+                    if (v > maxVal) {
+                        maxVal = v;
+                    }
+                }
+            }
+            featuresQueue.FreeTensor(featuresLocal);
+        }
+
+        float sumVal = 0.0F;
+        LocalTensor<float> tmpLocal = tmpBuf.Get<float>();
+        for (int32_t tile = 0; tile < classTileNum; tile++) {
+            int32_t classOffset = tile * classTileLen;
+            CopyInFeaturesClass(row, classOffset, classTileLen);
+            LocalTensor<T> featuresLocal = featuresQueue.DeQue<T>();
+            if constexpr (IsSameType<T, half>::value || IsSameType<T, bfloat16_t>::value) {
+                LocalTensor<float> featuresFp32 = castBuf.Get<float>();
+                Cast(featuresFp32, featuresLocal, RoundMode::CAST_NONE, classTileLen);
+                for (int32_t i = 0; i < classTileLen; i++) {
+                    tmpLocal.SetValue(i, featuresFp32.GetValue(i) - maxVal);
+                }
+            } else {
+                for (int32_t i = 0; i < classTileLen; i++) {
+                    tmpLocal.SetValue(i, (float)featuresLocal.GetValue(i) - maxVal);
+                }
+            }
+            Exp(tmpLocal, tmpLocal, classTileLen);
+            for (int32_t i = 0; i < classTileLen; i++) {
+                sumVal = sumVal + tmpLocal.GetValue(i);
+            }
+            featuresQueue.FreeTensor(featuresLocal);
+        }
+        if (classTail > 0) {
+            int32_t classOffset = classTileNum * classTileLen;
+            CopyInFeaturesClass(row, classOffset, classTail);
+            LocalTensor<T> featuresLocal = featuresQueue.DeQue<T>();
+            if constexpr (IsSameType<T, half>::value || IsSameType<T, bfloat16_t>::value) {
+                LocalTensor<float> featuresFp32 = castBuf.Get<float>();
+                Cast(featuresFp32, featuresLocal, RoundMode::CAST_NONE, classTail);
+                for (int32_t i = 0; i < classTail; i++) {
+                    tmpLocal.SetValue(i, featuresFp32.GetValue(i) - maxVal);
+                }
+            } else {
+                for (int32_t i = 0; i < classTail; i++) {
+                    tmpLocal.SetValue(i, (float)featuresLocal.GetValue(i) - maxVal);
+                }
+            }
+            Exp(tmpLocal, tmpLocal, classTail);
+            for (int32_t i = 0; i < classTail; i++) {
+                sumVal = sumVal + tmpLocal.GetValue(i);
+            }
+            featuresQueue.FreeTensor(featuresLocal);
+        }
+
+        LocalTensor<float> lnTensor = lnBuf.Get<float>();
+        lnTensor.SetValue(0, sumVal);
+        Ln(lnTensor, lnTensor, 1);
+        float logSumVal = lnTensor.GetValue(0);
+        float lossVal = 0.0F;
+
+        for (int32_t tile = 0; tile < classTileNum; tile++) {
+            int32_t classOffset = tile * classTileLen;
+            CopyInFeatureLabelClass(row, classOffset, classTileLen);
+            LocalTensor<T> featuresLocal = featuresQueue.DeQue<T>();
+            LocalTensor<T> labelsLocal = labelsQueue.DeQue<T>();
+            LocalTensor<T> backpropLocal = backpropQueue.AllocTensor<T>();
+            if constexpr (IsSameType<T, half>::value || IsSameType<T, bfloat16_t>::value) {
+                LocalTensor<float> featuresFp32 = castBuf.Get<float>();
+                LocalTensor<float> labelsFp32 = featuresFp32[classTileLen];
+                LocalTensor<float> backpropFp32 = labelsFp32[classTileLen];
+                Cast(featuresFp32, featuresLocal, RoundMode::CAST_NONE, classTileLen);
+                Cast(labelsFp32, labelsLocal, RoundMode::CAST_NONE, classTileLen);
+                for (int32_t i = 0; i < classTileLen; i++) {
+                    tmpLocal.SetValue(i, featuresFp32.GetValue(i) - maxVal);
+                }
+                Exp(tmpLocal, tmpLocal, classTileLen);
+                for (int32_t i = 0; i < classTileLen; i++) {
+                    float softmax = tmpLocal.GetValue(i) / sumVal;
+                    float label = labelsFp32.GetValue(i);
+                    float feature = featuresFp32.GetValue(i);
+                    backpropFp32.SetValue(i, softmax - label);
+                    lossVal = lossVal - label * (feature - maxVal - logSumVal);
+                }
+                Cast(backpropLocal, backpropFp32, RoundMode::CAST_RINT, classTileLen);
+            } else {
+                for (int32_t i = 0; i < classTileLen; i++) {
+                    tmpLocal.SetValue(i, (float)featuresLocal.GetValue(i) - maxVal);
+                }
+                Exp(tmpLocal, tmpLocal, classTileLen);
+                for (int32_t i = 0; i < classTileLen; i++) {
+                    float softmax = tmpLocal.GetValue(i) / sumVal;
+                    float label = (float)labelsLocal.GetValue(i);
+                    float feature = (float)featuresLocal.GetValue(i);
+                    backpropLocal.SetValue(i, (T)(softmax - label));
+                    lossVal = lossVal - label * (feature - maxVal - logSumVal);
+                }
+            }
+            backpropQueue.EnQue<T>(backpropLocal);
+            CopyOutBackpropClass(row, classOffset, classTileLen);
+            featuresQueue.FreeTensor(featuresLocal);
+            labelsQueue.FreeTensor(labelsLocal);
+        }
+        if (classTail > 0) {
+            int32_t classOffset = classTileNum * classTileLen;
+            CopyInFeatureLabelClass(row, classOffset, classTail);
+            LocalTensor<T> featuresLocal = featuresQueue.DeQue<T>();
+            LocalTensor<T> labelsLocal = labelsQueue.DeQue<T>();
+            LocalTensor<T> backpropLocal = backpropQueue.AllocTensor<T>();
+            if constexpr (IsSameType<T, half>::value || IsSameType<T, bfloat16_t>::value) {
+                LocalTensor<float> featuresFp32 = castBuf.Get<float>();
+                LocalTensor<float> labelsFp32 = featuresFp32[classTileLen];
+                LocalTensor<float> backpropFp32 = labelsFp32[classTileLen];
+                Cast(featuresFp32, featuresLocal, RoundMode::CAST_NONE, classTail);
+                Cast(labelsFp32, labelsLocal, RoundMode::CAST_NONE, classTail);
+                for (int32_t i = 0; i < classTail; i++) {
+                    tmpLocal.SetValue(i, featuresFp32.GetValue(i) - maxVal);
+                }
+                Exp(tmpLocal, tmpLocal, classTail);
+                for (int32_t i = 0; i < classTail; i++) {
+                    float softmax = tmpLocal.GetValue(i) / sumVal;
+                    float label = labelsFp32.GetValue(i);
+                    float feature = featuresFp32.GetValue(i);
+                    backpropFp32.SetValue(i, softmax - label);
+                    lossVal = lossVal - label * (feature - maxVal - logSumVal);
+                }
+                Cast(backpropLocal, backpropFp32, RoundMode::CAST_RINT, classTail);
+            } else {
+                for (int32_t i = 0; i < classTail; i++) {
+                    tmpLocal.SetValue(i, (float)featuresLocal.GetValue(i) - maxVal);
+                }
+                Exp(tmpLocal, tmpLocal, classTail);
+                for (int32_t i = 0; i < classTail; i++) {
+                    float softmax = tmpLocal.GetValue(i) / sumVal;
+                    float label = (float)labelsLocal.GetValue(i);
+                    float feature = (float)featuresLocal.GetValue(i);
+                    backpropLocal.SetValue(i, (T)(softmax - label));
+                    lossVal = lossVal - label * (feature - maxVal - logSumVal);
+                }
+            }
+            backpropQueue.EnQue<T>(backpropLocal);
+            CopyOutBackpropClass(row, classOffset, classTail);
+            featuresQueue.FreeTensor(featuresLocal);
+            labelsQueue.FreeTensor(labelsLocal);
+        }
+
+        LocalTensor<T> lossLocal = lossQueue.AllocTensor<T>();
+        if constexpr (IsSameType<T, half>::value || IsSameType<T, bfloat16_t>::value) {
+            LocalTensor<float> lossFp32 = castBuf.Get<float>();
+            lossFp32.SetValue(0, lossVal);
+            Cast(lossLocal, lossFp32, RoundMode::CAST_RINT, 1);
+        } else {
+            lossLocal.SetValue(0, (T)lossVal);
+        }
+        lossQueue.EnQue<T>(lossLocal);
+        CopyOutLoss(row);
+    }
+}
+
+template <typename T>
 __aicore__ inline void KernelSoftmaxCrossEntropyWithLogits<T>::Process()
 {
+    if (classTileLength < numClasses) {
+        ProcessSplitR();
+        return;
+    }
     for (int32_t i = 0; i < (int32_t)tileNum; i++) {
         int32_t rowOffset = i * tileLength;
         CopyIn(rowOffset, tileLength);

@@ -16,21 +16,24 @@ __global__ __aicore__ void softmax_cross_entropy_with_logits(
         NsSoftmaxCrossEntropyWithLogits::KernelSoftmaxCrossEntropyWithLogits<float> op;
         op.Init(features, labels, loss, backprop,
                 tilingData.batchSize, tilingData.numClasses,
-                tilingData.blockLength, tilingData.tileNum, tilingData.tileLength);
+                tilingData.blockLength, tilingData.tileNum, tilingData.tileLength,
+                tilingData.classTileLength);
         op.Process();
     }
     if constexpr (schMode == static_cast<uint32_t>(SoftmaxCrossEntropyWithLogitsTilingKey::TILING_KEY_FLOAT16)) {
         NsSoftmaxCrossEntropyWithLogits::KernelSoftmaxCrossEntropyWithLogits<half> op;
         op.Init(features, labels, loss, backprop,
                 tilingData.batchSize, tilingData.numClasses,
-                tilingData.blockLength, tilingData.tileNum, tilingData.tileLength);
+                tilingData.blockLength, tilingData.tileNum, tilingData.tileLength,
+                tilingData.classTileLength);
         op.Process();
     }
     if constexpr (schMode == static_cast<uint32_t>(SoftmaxCrossEntropyWithLogitsTilingKey::TILING_KEY_BF16)) {
         NsSoftmaxCrossEntropyWithLogits::KernelSoftmaxCrossEntropyWithLogits<bfloat16_t> op;
         op.Init(features, labels, loss, backprop,
                 tilingData.batchSize, tilingData.numClasses,
-                tilingData.blockLength, tilingData.tileNum, tilingData.tileLength);
+                tilingData.blockLength, tilingData.tileNum, tilingData.tileLength,
+                tilingData.classTileLength);
         op.Process();
     }
 }

@@ -32,6 +32,7 @@ private:
     TQue<QuePosition::VECOUT, BUFFER_NUM> lossQueue;
     TQue<QuePosition::VECOUT, BUFFER_NUM> backpropQueue;
     TBuf<QuePosition::VECCALC> tmpBuf;
+    TBuf<QuePosition::VECCALC> castBuf;
     TBuf<QuePosition::VECCALC> lnBuf;
 
     GlobalTensor<T> featuresGm;
@@ -70,7 +71,10 @@ __aicore__ inline void KernelSoftmaxCrossEntropyWithLogits<T>::Init(
     pipe.InitBuffer(labelsQueue,   BUFFER_NUM, tileLength * numClasses * sizeof(T));
     pipe.InitBuffer(lossQueue,     BUFFER_NUM, tileLength * sizeof(T));
     pipe.InitBuffer(backpropQueue, BUFFER_NUM, tileLength * numClasses * sizeof(T));
-    pipe.InitBuffer(tmpBuf,        tileLength * numClasses * sizeof(T));
+    pipe.InitBuffer(tmpBuf,        tileLength * numClasses * sizeof(float));
+    if constexpr (IsSameType<T, half>::value || IsSameType<T, bfloat16_t>::value) {
+        pipe.InitBuffer(castBuf, (3 * tileLength * numClasses + tileLength) * sizeof(float));
+    }
     pipe.InitBuffer(lnBuf, 32 * sizeof(float));
 }
 
@@ -111,52 +115,98 @@ __aicore__ inline void KernelSoftmaxCrossEntropyWithLogits<T>::Compute(int32_t r
     LocalTensor<T> labelsLocal   = labelsQueue.DeQue<T>();
     LocalTensor<T> backpropLocal = backpropQueue.AllocTensor<T>();
     LocalTensor<T> lossLocal     = lossQueue.AllocTensor<T>();
-    LocalTensor<T> tmpLocal      = tmpBuf.Get<T>();
+    LocalTensor<float> tmpLocal  = tmpBuf.Get<float>();
 
-    for (int32_t i = 0; i < rowCount; i++) {
-        int32_t rowStart = i * numClasses;
+    if constexpr (IsSameType<T, half>::value || IsSameType<T, bfloat16_t>::value) {
+        int32_t elementCount = rowCount * numClasses;
+        LocalTensor<float> featuresFp32 = castBuf.Get<float>();
+        LocalTensor<float> labelsFp32 = featuresFp32[tileLength * numClasses];
+        LocalTensor<float> backpropFp32 = labelsFp32[tileLength * numClasses];
+        LocalTensor<float> lossFp32 = backpropFp32[tileLength * numClasses];
 
-        // find max
-        T maxVal = featuresLocal.GetValue(rowStart);
-        for (int32_t j = 1; j < (int32_t)numClasses; j++) {
-            T v = featuresLocal.GetValue(rowStart + j);
-            if (v > maxVal) maxVal = v;
+        Cast(featuresFp32, featuresLocal, RoundMode::CAST_NONE, elementCount);
+        Cast(labelsFp32, labelsLocal, RoundMode::CAST_NONE, elementCount);
+
+        for (int32_t i = 0; i < rowCount; i++) {
+            int32_t rowStart = i * numClasses;
+
+            float maxVal = featuresFp32.GetValue(rowStart);
+            for (int32_t j = 1; j < (int32_t)numClasses; j++) {
+                float v = featuresFp32.GetValue(rowStart + j);
+                if (v > maxVal) {
+                    maxVal = v;
+                }
+            }
+
+            for (int32_t j = 0; j < (int32_t)numClasses; j++) {
+                tmpLocal.SetValue(rowStart + j, featuresFp32.GetValue(rowStart + j) - maxVal);
+            }
+            Exp(tmpLocal[rowStart], tmpLocal[rowStart], (int32_t)numClasses);
+
+            float sumVal = 0.0f;
+            for (int32_t j = 0; j < (int32_t)numClasses; j++) {
+                sumVal = sumVal + tmpLocal.GetValue(rowStart + j);
+            }
+
+            LocalTensor<float> lnTensor = lnBuf.Get<float>();
+            lnTensor.SetValue(0, sumVal);
+            Ln(lnTensor, lnTensor, 1);
+            float logSumVal = lnTensor.GetValue(0);
+
+            float lossVal = 0.0f;
+            for (int32_t j = 0; j < (int32_t)numClasses; j++) {
+                float softmax = tmpLocal.GetValue(rowStart + j) / sumVal;
+                float label = labelsFp32.GetValue(rowStart + j);
+                float feature = featuresFp32.GetValue(rowStart + j);
+                backpropFp32.SetValue(rowStart + j, softmax - label);
+                lossVal = lossVal - label * (feature - maxVal - logSumVal);
+            }
+            lossFp32.SetValue(i, lossVal);
         }
 
-        // x - max
-        for (int32_t j = 0; j < (int32_t)numClasses; j++) {
-            tmpLocal.SetValue(rowStart + j, featuresLocal.GetValue(rowStart + j) - maxVal);
+        Cast(backpropLocal, backpropFp32, RoundMode::CAST_RINT, elementCount);
+        Cast(lossLocal, lossFp32, RoundMode::CAST_RINT, rowCount);
+    } else {
+        for (int32_t i = 0; i < rowCount; i++) {
+            int32_t rowStart = i * numClasses;
+
+            // find max
+            T maxVal = featuresLocal.GetValue(rowStart);
+            for (int32_t j = 1; j < (int32_t)numClasses; j++) {
+                T v = featuresLocal.GetValue(rowStart + j);
+                if (v > maxVal) maxVal = v;
+            }
+
+            // x - max
+            for (int32_t j = 0; j < (int32_t)numClasses; j++) {
+                tmpLocal.SetValue(rowStart + j, featuresLocal.GetValue(rowStart + j) - maxVal);
+            }
+
+            // exp(x - max)
+            Exp(tmpLocal[rowStart], tmpLocal[rowStart], (int32_t)numClasses);
+
+            // sum
+            T sumVal = static_cast<T>(0);
+            for (int32_t j = 0; j < (int32_t)numClasses; j++) {
+                sumVal = sumVal + tmpLocal.GetValue(rowStart + j);
+            }
+
+            LocalTensor<float> lnTensor = lnBuf.Get<float>();
+            lnTensor.SetValue(0, (float)sumVal);
+            Ln(lnTensor, lnTensor, 1);
+            T logSumVal = (T)lnTensor.GetValue(0);
+
+            // backprop and loss
+            T lossVal = static_cast<T>(0);
+            for (int32_t j = 0; j < (int32_t)numClasses; j++) {
+                T softmax_j = tmpLocal.GetValue(rowStart + j) / sumVal;
+                T label_j   = labelsLocal.GetValue(rowStart + j);
+                T feat_j    = featuresLocal.GetValue(rowStart + j);
+                backpropLocal.SetValue(rowStart + j, softmax_j - label_j);
+                lossVal = lossVal + (label_j * static_cast<T>(-1)) * (feat_j - maxVal - logSumVal);
+            }
+            lossLocal.SetValue(i, lossVal);
         }
-
-        // exp(x - max)
-        Exp(tmpLocal[rowStart], tmpLocal[rowStart], (int32_t)numClasses);
-
-        // sum
-        T sumVal = static_cast<T>(0);
-        for (int32_t j = 0; j < (int32_t)numClasses; j++) {
-            sumVal = sumVal + tmpLocal.GetValue(rowStart + j);
-        }
-
-        // log(sum)
-        // LocalTensor<T> sumTensor = tmpBuf.Get<T>();
-        // sumTensor.SetValue(0, sumVal);
-        // Ln(sumTensor, sumTensor, 1);
-        // T logSumVal = sumTensor.GetValue(0);
-        LocalTensor<float> lnTensor = lnBuf.Get<float>();
-        lnTensor.SetValue(0, (float)sumVal);
-        Ln(lnTensor, lnTensor, 1);
-        T logSumVal = (T)lnTensor.GetValue(0);
-
-        // backprop and loss
-        T lossVal = static_cast<T>(0);
-        for (int32_t j = 0; j < (int32_t)numClasses; j++) {
-            T softmax_j = tmpLocal.GetValue(rowStart + j) / sumVal;
-            T label_j   = labelsLocal.GetValue(rowStart + j);
-            T feat_j    = featuresLocal.GetValue(rowStart + j);
-            backpropLocal.SetValue(rowStart + j, softmax_j - label_j);
-            lossVal = lossVal + (label_j * static_cast<T>(-1)) * (feat_j - maxVal - logSumVal);
-        }
-        lossLocal.SetValue(i, lossVal);
     }
 
     backpropQueue.EnQue<T>(backpropLocal);

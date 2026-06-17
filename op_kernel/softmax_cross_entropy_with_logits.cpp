@@ -3,6 +3,7 @@
 enum class SoftmaxCrossEntropyWithLogitsTilingKey : uint32_t {
     TILING_KEY_FLOAT = SCH_MODE_FLOAT,
     TILING_KEY_FLOAT16 = SCH_MODE_FLOAT16,
+    TILING_KEY_BF16 = SCH_MODE_BF16,
 };
 
 template <uint32_t schMode>
@@ -20,6 +21,13 @@ __global__ __aicore__ void softmax_cross_entropy_with_logits(
     }
     if constexpr (schMode == static_cast<uint32_t>(SoftmaxCrossEntropyWithLogitsTilingKey::TILING_KEY_FLOAT16)) {
         NsSoftmaxCrossEntropyWithLogits::KernelSoftmaxCrossEntropyWithLogits<half> op;
+        op.Init(features, labels, loss, backprop,
+                tilingData.batchSize, tilingData.numClasses,
+                tilingData.blockLength, tilingData.tileNum, tilingData.tileLength);
+        op.Process();
+    }
+    if constexpr (schMode == static_cast<uint32_t>(SoftmaxCrossEntropyWithLogitsTilingKey::TILING_KEY_BF16)) {
+        NsSoftmaxCrossEntropyWithLogits::KernelSoftmaxCrossEntropyWithLogits<bfloat16_t> op;
         op.Init(features, labels, loss, backprop,
                 tilingData.batchSize, tilingData.numClasses,
                 tilingData.blockLength, tilingData.tileNum, tilingData.tileLength);

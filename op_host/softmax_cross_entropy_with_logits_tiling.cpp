@@ -61,12 +61,19 @@ static ge::graphStatus SoftmaxCrossEntropyWithLogitsTilingFunc(gert::TilingConte
     auto labelsDtype = context->GetInputDesc(1)->GetDataType();
     OP_CHECK_IF(labelsDtype != dtype,
                 OP_LOGE(context, "features and labels must have the same dtype"), return ge::GRAPH_FAILED);
-    OP_CHECK_IF(dtype != ge::DT_FLOAT && dtype != ge::DT_FLOAT16,
-                OP_LOGE(context, "only float32 and float16 are supported by current kernel"), return ge::GRAPH_FAILED);
+    OP_CHECK_IF(dtype != ge::DT_FLOAT && dtype != ge::DT_FLOAT16 && dtype != ge::DT_BF16,
+                OP_LOGE(context, "only float32, float16, and bfloat16 are supported by current kernel"),
+                return ge::GRAPH_FAILED);
     int64_t typeLength = (dtype == ge::DT_FLOAT) ? 4 : 2;
 
-    int64_t bytesPerRow = 3 * numClasses * typeLength + typeLength + numClasses * sizeof(float);
-    int64_t maxRowsPerTile = static_cast<int64_t>(ubSize) / (2 * bytesPerRow);
+    constexpr int64_t bufferNum = 2;
+    int64_t queueBytesPerRow = bufferNum * (3 * numClasses * typeLength + typeLength);
+    int64_t calcBytesPerRow = numClasses * sizeof(float);
+    if (dtype == ge::DT_FLOAT16 || dtype == ge::DT_BF16) {
+        calcBytesPerRow += (3 * numClasses + 1) * sizeof(float);
+    }
+    int64_t bytesPerRow = queueBytesPerRow + calcBytesPerRow + 32;
+    int64_t maxRowsPerTile = static_cast<int64_t>(ubSize) / bytesPerRow;
     if (maxRowsPerTile <= 0) maxRowsPerTile = 1;
 
     int64_t usedCoreNum = batchSize < coreNum ? batchSize : coreNum;
@@ -89,8 +96,10 @@ static ge::graphStatus SoftmaxCrossEntropyWithLogitsTilingFunc(gert::TilingConte
     uint64_t tilingKey = 0;
     if (dtype == ge::DT_FLOAT) {
         tilingKey = GET_TPL_TILING_KEY(SCH_MODE_FLOAT);
-    } else {
+    } else if (dtype == ge::DT_FLOAT16) {
         tilingKey = GET_TPL_TILING_KEY(SCH_MODE_FLOAT16);
+    } else {
+        tilingKey = GET_TPL_TILING_KEY(SCH_MODE_BF16);
     }
     context->SetTilingKey(tilingKey);
     

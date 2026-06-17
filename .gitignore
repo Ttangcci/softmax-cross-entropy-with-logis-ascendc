@@ -1,0 +1,28 @@
+# 编译目录
+build/
+out/
+output/
+
+# 编译生成文件
+*.o
+*.so
+*.a
+*.run
+*.log
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Python
+__pycache__/
+*.pyc
+
+# IDE
+.vscode/
+.idea/
+
+# macOS
+.DS_Store

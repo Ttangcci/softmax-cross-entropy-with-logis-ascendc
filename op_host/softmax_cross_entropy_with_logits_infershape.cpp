@@ -28,6 +28,19 @@ static ge::graphStatus InferShapeSoftmaxCrossEntropyWithLogits(gert::InferShapeC
 
     const gert::Shape* featuresShape = context->GetInputShape(IDX_0);
     OP_CHECK_NULL_WITH_CONTEXT(context, featuresShape);
+    const gert::Shape* labelsShape = context->GetInputShape(IDX_1);
+    OP_CHECK_NULL_WITH_CONTEXT(context, labelsShape);
+
+    int64_t dimNum = featuresShape->GetDimNum();
+    OP_CHECK_IF(dimNum < 2, OP_LOGE(context, "features rank must be at least 2"), return GRAPH_FAILED);
+    OP_CHECK_IF(labelsShape->GetDimNum() != dimNum,
+                OP_LOGE(context, "features and labels must have the same rank"), return GRAPH_FAILED);
+    for (int64_t i = 0; i < dimNum; ++i) {
+        int64_t featuresDim = featuresShape->GetDim(i);
+        int64_t labelsDim = labelsShape->GetDim(i);
+        OP_CHECK_IF(featuresDim >= 0 && labelsDim >= 0 && featuresDim != labelsDim,
+                    OP_LOGE(context, "features and labels must have the same shape"), return GRAPH_FAILED);
+    }
 
     gert::Shape* lossShape = context->GetOutputShape(IDX_0);
     OP_CHECK_NULL_WITH_CONTEXT(context, lossShape);
@@ -35,7 +48,6 @@ static ge::graphStatus InferShapeSoftmaxCrossEntropyWithLogits(gert::InferShapeC
     gert::Shape* backpropShape = context->GetOutputShape(IDX_1);
     OP_CHECK_NULL_WITH_CONTEXT(context, backpropShape);
 
-    int64_t dimNum = featuresShape->GetDimNum();
     lossShape->SetDimNum(dimNum - 1);
     for (int64_t i = 0; i < dimNum - 1; i++) {
         lossShape->SetDim(i, featuresShape->GetDim(i));

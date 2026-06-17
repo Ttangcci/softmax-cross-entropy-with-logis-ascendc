@@ -23,14 +23,18 @@ static constexpr int64_t IDX_1 = 1;
 
 static ge::graphStatus InferDataTypeSoftmaxCrossEntropyWithLogits(gert::InferDataTypeContext* context)
 {
+    OP_CHECK_IF(context == nullptr, OP_LOGE(context, "context is nullptr"), return GRAPH_FAILED);
     OP_LOGD(context->GetNodeName(), "Begin to do InferDataTypeSoftmaxCrossEntropyWithLogits");
 
-    // 输入 features 的 dtype 决定输出 dtype
-    ge::DataType inputDtype = context->GetInputDataType(IDX_0);
+    ge::DataType featuresDtype = context->GetInputDataType(IDX_0);
+    ge::DataType labelsDtype = context->GetInputDataType(IDX_1);
+    OP_CHECK_IF(featuresDtype != ge::DT_FLOAT16 && featuresDtype != ge::DT_FLOAT && featuresDtype != ge::DT_BF16,
+                OP_LOGE(context, "features dtype must be float16, float32, or bfloat16"), return GRAPH_FAILED);
+    OP_CHECK_IF(labelsDtype != featuresDtype,
+                OP_LOGE(context, "features and labels must have the same dtype"), return GRAPH_FAILED);
 
-    // loss 和 backprop 的 dtype 和输入一致
-    context->SetOutputDataType(IDX_0, inputDtype);
-    context->SetOutputDataType(IDX_1, inputDtype);
+    context->SetOutputDataType(IDX_0, featuresDtype);
+    context->SetOutputDataType(IDX_1, featuresDtype);
 
     OP_LOGD(context->GetNodeName(), "End to do InferDataTypeSoftmaxCrossEntropyWithLogits");
     return GRAPH_SUCCESS;

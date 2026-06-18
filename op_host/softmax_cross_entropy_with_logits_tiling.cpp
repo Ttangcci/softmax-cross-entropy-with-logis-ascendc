@@ -46,11 +46,11 @@ static ge::graphStatus SoftmaxCrossEntropyWithLogitsTilingFunc(gert::TilingConte
     OP_CHECK_NULL_WITH_CONTEXT(context, featuresStorageShape);
     const gert::Shape& featuresShape = featuresStorageShape->GetStorageShape();
 
-    int64_t dimNum = featuresShape.GetDimNum();
+    size_t dimNum = featuresShape.GetDimNum();
     OP_CHECK_IF(dimNum < 2, OP_LOGE(context, "features must be at least 2D"), return ge::GRAPH_FAILED);
 
     int64_t batchSize = 1;
-    for (int64_t i = 0; i < dimNum - 1; i++) {
+    for (size_t i = 0; i < dimNum - 1; i++) {
         batchSize *= featuresShape.GetDim(i);
     }
     int64_t numClasses = featuresShape.GetDim(dimNum - 1);

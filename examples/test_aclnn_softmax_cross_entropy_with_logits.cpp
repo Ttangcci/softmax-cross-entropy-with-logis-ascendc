@@ -4,9 +4,13 @@
  * CANN Open Software License Agreement Version 2.0 (the "License").
  */
 #include <iostream>
+#include <cmath>
 #include <vector>
 #include "acl/acl.h"
 #include "aclnnop/aclnn_softmax_cross_entropy_with_logits.h"
+
+constexpr float LOSS_TOL = 1e-4f;
+constexpr float BACKPROP_TOL = 1e-4f;
 
 #define CHECK_RET(cond, return_expr) \
   do {                               \
@@ -26,6 +30,40 @@ int64_t GetShapeSize(const std::vector<int64_t>& shape) {
     shapeSize *= i;
   }
   return shapeSize;
+}
+
+float MaxAbsDiff(const std::vector<float>& actual, const std::vector<float>& expected) {
+  float maxDiff = 0.0f;
+  for (size_t i = 0; i < actual.size(); ++i) {
+    float diff = std::fabs(actual[i] - expected[i]);
+    if (diff > maxDiff) {
+      maxDiff = diff;
+    }
+  }
+  return maxDiff;
+}
+
+int CheckResult(const std::vector<float>& lossResult, const std::vector<float>& backpropResult) {
+  const std::vector<float> expectedLoss = {
+    0.451914400f, 1.609437943f, 1.619416237f, 0.451914400f
+  };
+  const std::vector<float> expectedBackprop = {
+    0.011656231f, 0.031684920f, 0.086128540f, 0.234121665f, -0.363591373f,
+    -0.800000012f, 0.200000003f, 0.200000003f, 0.200000003f, 0.200000003f,
+    0.162120342f, 0.179170683f, -0.801985741f, 0.218839586f, 0.241855130f,
+    -0.363591373f, 0.234121665f, 0.086128540f, 0.031684920f, 0.011656231f
+  };
+
+  float lossMaxDiff = MaxAbsDiff(lossResult, expectedLoss);
+  float backpropMaxDiff = MaxAbsDiff(backpropResult, expectedBackprop);
+  LOG_PRINT("loss max diff: %f\n", lossMaxDiff);
+  LOG_PRINT("backprop max diff: %f\n", backpropMaxDiff);
+  if (lossMaxDiff > LOSS_TOL || backpropMaxDiff > BACKPROP_TOL) {
+    LOG_PRINT("SoftmaxCrossEntropyWithLogits aclnn example FAILED.\n");
+    return 1;
+  }
+  LOG_PRINT("SoftmaxCrossEntropyWithLogits aclnn example PASSED.\n");
+  return 0;
 }
 
 int Init(int32_t deviceId, aclrtStream* stream) {
@@ -145,6 +183,9 @@ int main() {
   for (int64_t i = 0; i < batch * numClasses; i++) {
     LOG_PRINT("backprop[%ld] is: %f\n", i, backpropResult[i]);
   }
+
+  ret = CheckResult(lossResult, backpropResult);
+  CHECK_RET(ret == 0, return ret);
 
   // 6. 释放资源
   aclDestroyTensor(features);

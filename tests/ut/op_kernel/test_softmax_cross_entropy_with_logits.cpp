@@ -19,6 +19,11 @@ const std::string DATA_SOURCE_PATH =
                 "softmax_cross_entropy_with_logits_data";
 const std::string DATA_PATH = "./softmax_cross_entropy_with_logits_data";
 
+size_t AlignUp(size_t value, size_t alignment)
+{
+    return (value + alignment - 1) / alignment * alignment;
+}
+
 class SoftmaxCrossEntropyWithLogitsKernel : public testing::Test {
 protected:
     static void SetUpTestCase()
@@ -37,10 +42,10 @@ void RunFloatCase(const std::string& shape, uint64_t batchSize, uint64_t numClas
 
     size_t inputByteSize = batchSize * numClasses * sizeof(float);
     size_t lossByteSize = batchSize * sizeof(float);
-    auto* features = static_cast<uint8_t*>(AscendC::GmAlloc(inputByteSize));
-    auto* labels = static_cast<uint8_t*>(AscendC::GmAlloc(inputByteSize));
-    auto* loss = static_cast<uint8_t*>(AscendC::GmAlloc(lossByteSize));
-    auto* backprop = static_cast<uint8_t*>(AscendC::GmAlloc(inputByteSize));
+    auto* features = static_cast<uint8_t*>(AscendC::GmAlloc(AlignUp(inputByteSize, 32)));
+    auto* labels = static_cast<uint8_t*>(AscendC::GmAlloc(AlignUp(inputByteSize, 32)));
+    auto* loss = static_cast<uint8_t*>(AscendC::GmAlloc(AlignUp(lossByteSize, 32)));
+    auto* backprop = static_cast<uint8_t*>(AscendC::GmAlloc(AlignUp(inputByteSize, 32)));
     auto* workspace = static_cast<uint8_t*>(AscendC::GmAlloc(32));
     auto* tiling = static_cast<uint8_t*>(AscendC::GmAlloc(sizeof(SoftmaxCrossEntropyWithLogitsTilingData)));
 

@@ -6,6 +6,7 @@
 
 #include "../../../op_kernel/softmax_cross_entropy_with_logits.cpp"
 #include "softmax_cross_entropy_with_logits_tiling.h"
+#include <cstdint>
 #include <cstdlib>
 #include <string>
 #include "data_utils.h"
@@ -34,14 +35,21 @@ protected:
     }
 };
 
-void RunFloatCase(const std::string& shape, uint64_t batchSize, uint64_t numClasses, uint64_t classTileLength)
+template <uint32_t SchMode>
+void RunCase(
+    const std::string& shape,
+    const std::string& dtype,
+    size_t typeSize,
+    uint64_t batchSize,
+    uint64_t numClasses,
+    uint64_t classTileLength)
 {
     const std::string generateCommand =
-        "cd " + DATA_PATH + " && python3 gen_data.py '" + shape + "' float32";
+        "cd " + DATA_PATH + " && python3 gen_data.py '" + shape + "' " + dtype;
     ASSERT_EQ(system(generateCommand.c_str()), 0);
 
-    size_t inputByteSize = batchSize * numClasses * sizeof(float);
-    size_t lossByteSize = batchSize * sizeof(float);
+    size_t inputByteSize = batchSize * numClasses * typeSize;
+    size_t lossByteSize = batchSize * typeSize;
     auto* features = static_cast<uint8_t*>(AscendC::GmAlloc(AlignUp(inputByteSize, 32)));
     auto* labels = static_cast<uint8_t*>(AscendC::GmAlloc(AlignUp(inputByteSize, 32)));
     auto* loss = static_cast<uint8_t*>(AscendC::GmAlloc(AlignUp(lossByteSize, 32)));
@@ -49,8 +57,8 @@ void RunFloatCase(const std::string& shape, uint64_t batchSize, uint64_t numClas
     auto* workspace = static_cast<uint8_t*>(AscendC::GmAlloc(32));
     auto* tiling = static_cast<uint8_t*>(AscendC::GmAlloc(sizeof(SoftmaxCrossEntropyWithLogitsTilingData)));
 
-    ReadFile(DATA_PATH + "/float32_features.bin", inputByteSize, features, inputByteSize);
-    ReadFile(DATA_PATH + "/float32_labels.bin", inputByteSize, labels, inputByteSize);
+    ReadFile(DATA_PATH + "/" + dtype + "_features.bin", inputByteSize, features, inputByteSize);
+    ReadFile(DATA_PATH + "/" + dtype + "_labels.bin", inputByteSize, labels, inputByteSize);
 
     auto* tilingData = reinterpret_cast<SoftmaxCrossEntropyWithLogitsTilingData*>(tiling);
     tilingData->batchSize = batchSize;
@@ -60,20 +68,13 @@ void RunFloatCase(const std::string& shape, uint64_t batchSize, uint64_t numClas
     tilingData->tileLength = 1;
     tilingData->classTileLength = classTileLength;
 
-    ICPU_SET_TILING_KEY(0);
+    ICPU_SET_TILING_KEY(SchMode);
     AscendC::SetKernelMode(KernelMode::AIV_MODE);
-    ICPU_RUN_KF(
-        softmax_cross_entropy_with_logits<0>,
-        1,
-        features,
-        labels,
-        loss,
-        backprop,
-        workspace,
-        tiling);
+    auto kernel = softmax_cross_entropy_with_logits<SchMode>;
+    ICPU_RUN_KF(kernel, 1, features, labels, loss, backprop, workspace, tiling);
 
-    WriteFile(DATA_PATH + "/float32_output_loss.bin", loss, lossByteSize);
-    WriteFile(DATA_PATH + "/float32_output_backprop.bin", backprop, inputByteSize);
+    WriteFile(DATA_PATH + "/" + dtype + "_output_loss.bin", loss, lossByteSize);
+    WriteFile(DATA_PATH + "/" + dtype + "_output_backprop.bin", backprop, inputByteSize);
 
     AscendC::GmFree(features);
     AscendC::GmFree(labels);
@@ -82,16 +83,21 @@ void RunFloatCase(const std::string& shape, uint64_t batchSize, uint64_t numClas
     AscendC::GmFree(workspace);
     AscendC::GmFree(tiling);
 
-    ASSERT_EQ(system(("cd " + DATA_PATH + " && python3 compare_data.py float32").c_str()), 0);
+    ASSERT_EQ(system(("cd " + DATA_PATH + " && python3 compare_data.py " + dtype).c_str()), 0);
 }
 } // namespace
 
 TEST_F(SoftmaxCrossEntropyWithLogitsKernel, float_full_row)
 {
-    RunFloatCase("(4, 5)", 4, 5, 5);
+    RunCase<0>("(4, 5)", "float32", sizeof(float), 4, 5, 5);
 }
 
 TEST_F(SoftmaxCrossEntropyWithLogitsKernel, float_split_r)
 {
-    RunFloatCase("(2, 16384)", 2, 16384, 4096);
+    RunCase<0>("(2, 16384)", "float32", sizeof(float), 2, 16384, 4096);
+}
+
+TEST_F(SoftmaxCrossEntropyWithLogitsKernel, float16_full_row)
+{
+    RunCase<1>("(8, 32)", "float16", sizeof(uint16_t), 8, 32, 32);
 }

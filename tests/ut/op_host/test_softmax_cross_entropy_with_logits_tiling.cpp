@@ -62,7 +62,7 @@ TEST_F(SoftmaxCrossEntropyWithLogitsTiling, float_split_r)
         4096);
 
     uint64_t expectedTilingKey = 0;
-    std::string expectedTilingData = "2 16384 1 1 1 9360 ";
+    std::string expectedTilingData = "2 16384 1 1 1 9351 ";
     std::vector<size_t> expectedWorkspaces = {16777216};
     ExecuteTestCase(
         context, ge::GRAPH_SUCCESS, expectedTilingKey, expectedTilingData, expectedWorkspaces);

@@ -37,7 +37,7 @@ TEST_F(SoftmaxCrossEntropyWithLogitsTiling, float_full_row)
 
     uint64_t expectedTilingKey = 0;
     std::string expectedTilingData = "4 5 1 1 1 5 ";
-    std::vector<size_t> expectedWorkspaces = {0};
+    std::vector<size_t> expectedWorkspaces = {16777216};
     ExecuteTestCase(
         context, ge::GRAPH_SUCCESS, expectedTilingKey, expectedTilingData, expectedWorkspaces);
 }
@@ -63,7 +63,7 @@ TEST_F(SoftmaxCrossEntropyWithLogitsTiling, float_split_r)
 
     uint64_t expectedTilingKey = 0;
     std::string expectedTilingData = "2 16384 1 1 1 9360 ";
-    std::vector<size_t> expectedWorkspaces = {0};
+    std::vector<size_t> expectedWorkspaces = {16777216};
     ExecuteTestCase(
         context, ge::GRAPH_SUCCESS, expectedTilingKey, expectedTilingData, expectedWorkspaces);
 }
@@ -89,7 +89,7 @@ TEST_F(SoftmaxCrossEntropyWithLogitsTiling, float16_full_row)
 
     uint64_t expectedTilingKey = 1;
     std::string expectedTilingData = "8 32 1 1 1 32 ";
-    std::vector<size_t> expectedWorkspaces = {0};
+    std::vector<size_t> expectedWorkspaces = {16777216};
     ExecuteTestCase(
         context, ge::GRAPH_SUCCESS, expectedTilingKey, expectedTilingData, expectedWorkspaces);
 }

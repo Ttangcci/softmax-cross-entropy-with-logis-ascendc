@@ -29,6 +29,16 @@ def softmax_cross_entropy_with_logits(features, labels, out_dtype=np.float32):
     return loss.astype(out_dtype), backprop.astype(out_dtype)
 
 
+def float32_to_bfloat16(value):
+    bits = np.asarray(value, dtype=np.float32).view(np.uint32)
+    rounding_bias = np.uint32(0x7FFF) + ((bits >> np.uint32(16)) & np.uint32(1))
+    return ((bits + rounding_bias) >> np.uint32(16)).astype(np.uint16)
+
+
+def bfloat16_to_float32(value):
+    return (np.asarray(value, dtype=np.uint16).astype(np.uint32) << np.uint32(16)).view(np.float32)
+
+
 def one_hot(labels, depth):
     result = np.zeros(labels.shape + (depth,), dtype=np.float32)
     np.put_along_axis(result, labels[..., None], 1.0, axis=-1)
@@ -62,15 +72,23 @@ def make_cases():
         labels = make_probability_labels(rng, shape)
         cases.append(Case(f"prob_f32_shape_{'x'.join(map(str, shape))}", features, labels, "float32"))
         cases.append(Case(f"prob_f16_shape_{'x'.join(map(str, shape))}", features, labels, "float16"))
+        cases.append(Case(f"prob_bf16_shape_{'x'.join(map(str, shape))}", features, labels, "bfloat16"))
 
     return cases
 
 
 def run_case(case, verbose=False):
-    out_dtype = DTYPE_MAP[case.dtype]
-    features = case.features.astype(out_dtype)
-    labels = case.labels.astype(out_dtype)
-    loss, backprop = softmax_cross_entropy_with_logits(features, labels, out_dtype)
+    if case.dtype == "bfloat16":
+        features = bfloat16_to_float32(float32_to_bfloat16(case.features))
+        labels = bfloat16_to_float32(float32_to_bfloat16(case.labels))
+        loss_fp32, backprop_fp32 = softmax_cross_entropy_with_logits(features, labels, np.float32)
+        loss = bfloat16_to_float32(float32_to_bfloat16(loss_fp32))
+        backprop = bfloat16_to_float32(float32_to_bfloat16(backprop_fp32))
+    else:
+        out_dtype = DTYPE_MAP[case.dtype]
+        features = case.features.astype(out_dtype)
+        labels = case.labels.astype(out_dtype)
+        loss, backprop = softmax_cross_entropy_with_logits(features, labels, out_dtype)
     ref_loss, ref_backprop = softmax_cross_entropy_with_logits(case.features, case.labels, np.float32)
 
     loss_error = np.max(np.abs(loss.astype(np.float32) - ref_loss))

@@ -10,17 +10,34 @@ def parse_shape(value):
     return tuple(int(item.strip()) for item in value.strip("()").split(",") if item.strip())
 
 
+def float32_to_bfloat16(value):
+    bits = np.asarray(value, dtype=np.float32).view(np.uint32)
+    rounding_bias = np.uint32(0x7FFF) + ((bits >> np.uint32(16)) & np.uint32(1))
+    return ((bits + rounding_bias) >> np.uint32(16)).astype(np.uint16)
+
+
+def bfloat16_to_float32(value):
+    return (np.asarray(value, dtype=np.uint16).astype(np.uint32) << np.uint32(16)).view(np.float32)
+
+
 def generate(shape, dtype):
-    np_dtype = {"float32": np.float32, "float16": np.float16}[dtype]
     rng = np.random.default_rng(20260618)
     features_fp32 = rng.normal(0.0, 2.0, size=shape).astype(np.float32)
     labels_fp32 = rng.random(shape, dtype=np.float32)
     labels_fp32 /= np.sum(labels_fp32, axis=-1, keepdims=True)
 
-    features = features_fp32.astype(np_dtype)
-    labels = labels_fp32.astype(np_dtype)
-    calc_features = features.astype(np.float32)
-    calc_labels = labels.astype(np.float32)
+    if dtype == "bfloat16":
+        features = float32_to_bfloat16(features_fp32)
+        labels = float32_to_bfloat16(labels_fp32)
+        calc_features = bfloat16_to_float32(features)
+        calc_labels = bfloat16_to_float32(labels)
+    else:
+        np_dtype = {"float32": np.float32, "float16": np.float16}[dtype]
+        features = features_fp32.astype(np_dtype)
+        labels = labels_fp32.astype(np_dtype)
+        calc_features = features.astype(np.float32)
+        calc_labels = labels.astype(np.float32)
+
     shifted = calc_features - np.max(calc_features, axis=-1, keepdims=True)
     exp_value = np.exp(shifted)
     sum_value = np.sum(exp_value, axis=-1, keepdims=True)
@@ -29,8 +46,12 @@ def generate(shape, dtype):
 
     features.tofile(f"{dtype}_features.bin")
     labels.tofile(f"{dtype}_labels.bin")
-    loss.astype(np_dtype).tofile(f"{dtype}_golden_loss.bin")
-    backprop.astype(np_dtype).tofile(f"{dtype}_golden_backprop.bin")
+    if dtype == "bfloat16":
+        float32_to_bfloat16(loss).tofile(f"{dtype}_golden_loss.bin")
+        float32_to_bfloat16(backprop).tofile(f"{dtype}_golden_backprop.bin")
+    else:
+        loss.astype(np_dtype).tofile(f"{dtype}_golden_loss.bin")
+        backprop.astype(np_dtype).tofile(f"{dtype}_golden_backprop.bin")
 
 
 if __name__ == "__main__":

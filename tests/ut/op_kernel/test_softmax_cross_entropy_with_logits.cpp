@@ -89,15 +89,30 @@ void RunCase(
 
 TEST_F(SoftmaxCrossEntropyWithLogitsKernel, float_full_row)
 {
-    RunCase<0>("(4, 5)", "float32", sizeof(float), 4, 5, 5);
+    RunCase<SCH_MODE_FLOAT>("(4, 5)", "float32", sizeof(float), 4, 5, 5);
 }
 
 TEST_F(SoftmaxCrossEntropyWithLogitsKernel, float_split_r)
 {
-    RunCase<0>("(2, 16384)", "float32", sizeof(float), 2, 16384, 4096);
+    RunCase<SCH_MODE_FLOAT>("(2, 16384)", "float32", sizeof(float), 2, 16384, 4096);
 }
 
 TEST_F(SoftmaxCrossEntropyWithLogitsKernel, float16_full_row)
 {
-    RunCase<1>("(8, 32)", "float16", sizeof(uint16_t), 8, 32, 32);
+    RunCase<SCH_MODE_FLOAT16>("(8, 32)", "float16", sizeof(uint16_t), 8, 32, 32);
+}
+
+TEST_F(SoftmaxCrossEntropyWithLogitsKernel, float16_split_r)
+{
+    RunCase<SCH_MODE_FLOAT16>("(2, 16384)", "float16", sizeof(uint16_t), 2, 16384, 4096);
+}
+
+TEST_F(SoftmaxCrossEntropyWithLogitsKernel, bfloat16_full_row)
+{
+    RunCase<SCH_MODE_BF16>("(8, 32)", "bfloat16", sizeof(uint16_t), 8, 32, 32);
+}
+
+TEST_F(SoftmaxCrossEntropyWithLogitsKernel, bfloat16_split_r)
+{
+    RunCase<SCH_MODE_BF16>("(2, 16384)", "bfloat16", sizeof(uint16_t), 2, 16384, 4096);
 }
